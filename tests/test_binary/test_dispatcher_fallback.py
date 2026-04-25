@@ -36,6 +36,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _node_available() -> bool:
+    return shutil.which("node") is not None
+
+
 def _run_slm(argv: list[str], env: dict) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(BIN_SLM), *argv],
@@ -135,13 +139,50 @@ def test_dispatcher_does_not_run_binary_for_other_commands(tmp_path):
     assert "PYFALLBACK" in proc.stdout
 
 
+@pytest.mark.skipif(not _node_available(),
+                    reason="node not installed")
+def test_slm_npm_prefers_pinned_runtime_python(tmp_path):
+    """bin/slm-npm should use the interpreter pinned by postinstall metadata."""
+    slm_home = tmp_path / "slm-home"
+    slm_home.mkdir(parents=True)
+    fake_python = tmp_path / "fake-python.sh"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = \"--version\" ]; then\n"
+        "  echo \"Python 3.12.2\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "echo PINNED_RUNTIME_PYTHON\n"
+        "exit 0\n"
+    )
+    fake_python.chmod(fake_python.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP
+                      | stat.S_IXOTH)
+    runtime_metadata = slm_home / "python-runtime.json"
+    runtime_metadata.write_text(
+        "{\n"
+        "  \"mode\": \"managed_venv\",\n"
+        f"  \"python_executable\": \"{fake_python}\",\n"
+        "  \"python_args\": []\n"
+        "}\n"
+    )
+
+    proc = subprocess.run(
+        [str(REPO_ROOT / "bin" / "slm-npm"), "status"],
+        env={
+            **os.environ,
+            "SL_MEMORY_PATH": str(slm_home),
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert proc.returncode == 0
+    assert "PINNED_RUNTIME_PYTHON" in proc.stdout
+
+
 # ---------------------------------------------------------------------------
 # H12 — postinstall SHA guard (Node harness)
 # ---------------------------------------------------------------------------
-
-
-def _node_available() -> bool:
-    return shutil.which("node") is not None
 
 
 @pytest.mark.skipif(not _node_available(),

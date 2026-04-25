@@ -9,62 +9,33 @@
 
 const { spawnSync } = require('child_process');
 const path = require('path');
-const os = require('os');
 const fs = require('fs');
+const {
+    findPythonCommand,
+    resolvePinnedPython,
+    getSlmHome,
+} = require('../scripts/python_runtime');
 
 // V3 package root (where src/superlocalmemory/ lives)
 const PKG_ROOT = path.join(__dirname, '..');
 const SRC_DIR = path.join(PKG_ROOT, 'src');
 const CLI_MODULE = 'superlocalmemory.cli.main';
 
-// Find Python 3 binary (robust multi-fallback detection)
-function findPython() {
-    const candidates = [
-        'python3',
-        'python',
-        '/opt/homebrew/bin/python3',
-        '/usr/local/bin/python3',
-        '/usr/bin/python3',
-    ];
-
-    // On Windows, also check common locations
-    if (os.platform() === 'win32') {
-        candidates.push(
-            'py -3',
-            path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python312', 'python.exe'),
-            path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python311', 'python.exe'),
-        );
-    }
-
-    for (const candidate of candidates) {
-        try {
-            const parts = candidate.split(' ');
-            const result = spawnSync(parts[0], [...parts.slice(1), '--version'], {
-                stdio: 'pipe',
-                timeout: 5000,
-            });
-            if (result.status === 0) {
-                const version = (result.stdout || '').toString().trim();
-                if (version.includes('3.')) {
-                    return candidate;
-                }
-            }
-        } catch (e) {
-            // Try next candidate
-        }
-    }
-    return null;
-}
-
 // Ensure ~/.superlocalmemory/ exists
-const SLM_HOME = process.env.SL_MEMORY_PATH || path.join(os.homedir(), '.superlocalmemory');
+const SLM_HOME = getSlmHome();
 if (!fs.existsSync(SLM_HOME)) {
     fs.mkdirSync(SLM_HOME, { recursive: true });
 }
 
-// Find Python
-const python = findPython();
-if (!python) {
+function resolvePythonParts() {
+    const pinned = resolvePinnedPython(SLM_HOME);
+    if (pinned && Array.isArray(pinned.parts)) return pinned.parts;
+    return findPythonCommand();
+}
+
+// Find Python (prefer pinned postinstall runtime)
+const pythonParts = resolvePythonParts();
+if (!pythonParts) {
     console.error('Error: Python 3.11+ not found.');
     console.error('Install Python from https://python.org/downloads/');
     process.exit(1);
@@ -80,7 +51,6 @@ if (args.includes('--version') || args.includes('-v')) {
 }
 
 // Launch V3 CLI via Python module
-const pythonParts = python.split(' ');
 const result = spawnSync(pythonParts[0], [
     ...pythonParts.slice(1),
     '-m', CLI_MODULE, ...args
