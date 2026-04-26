@@ -13,6 +13,12 @@ const { spawnSync } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const {
+    findPythonCommand,
+    ensureManagedVenv,
+    writeRuntimeMetadata,
+    getSlmHome,
+} = require('./python_runtime');
 
 console.log('\n════════════════════════════════════════════════════════════');
 console.log('  SuperLocalMemory V3 — The Unified Brain');
@@ -21,7 +27,7 @@ console.log('  https://github.com/qualixar/superlocalmemory');
 console.log('════════════════════════════════════════════════════════════\n');
 
 // --- Step 1: Create data directory ---
-const SLM_HOME = path.join(os.homedir(), '.superlocalmemory');
+const SLM_HOME = getSlmHome();
 if (!fs.existsSync(SLM_HOME)) {
     fs.mkdirSync(SLM_HOME, { recursive: true });
     console.log('✓ Created data directory: ' + SLM_HOME);
@@ -29,28 +35,9 @@ if (!fs.existsSync(SLM_HOME)) {
     console.log('✓ Data directory exists: ' + SLM_HOME);
 }
 
-// --- Step 2: Find Python 3 ---
-function findPython() {
-    const candidates = [
-        'python3', 'python',
-        '/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3',
-    ];
-    if (os.platform() === 'win32') candidates.push('py -3');
-    for (const cmd of candidates) {
-        try {
-            const parts = cmd.split(' ');
-            const r = spawnSync(parts[0], [...parts.slice(1), '--version'], {
-                stdio: 'pipe', timeout: 5000,
-                env: { ...process.env, PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:' + (process.env.PATH || '') },
-            });
-            if (r.status === 0 && (r.stdout || '').toString().includes('3.')) return parts;
-        } catch (e) { /* next */ }
-    }
-    return null;
-}
-
-const pythonParts = findPython();
-if (!pythonParts) {
+// --- Step 2: Find Python 3 and provision runtime ---
+const discoveredPythonParts = findPythonCommand();
+if (!discoveredPythonParts) {
     console.log('');
     console.log('╔══════════════════════════════════════════════════════════╗');
     console.log('║  ⚠  Python 3.11+ Required                              ║');
@@ -62,7 +49,37 @@ if (!pythonParts) {
     console.log('');
     process.exit(0); // Don't fail npm install
 }
-console.log('✓ Found Python: ' + pythonParts.join(' '));
+const runtimeSelection = ensureManagedVenv(discoveredPythonParts, { slmHome: SLM_HOME });
+const pythonParts = runtimeSelection.pythonParts;
+if (!pythonParts) {
+    console.log('');
+    console.log('╔══════════════════════════════════════════════════════════╗');
+    console.log('║  ⚠  Python runtime bootstrap failed                     ║');
+    console.log('╚══════════════════════════════════════════════════════════╝');
+    console.log('');
+    console.log('  Could not initialize a usable Python runtime.');
+    console.log('  Set SLM_PYTHON_MODE=system_python to force system mode.');
+    console.log('  Then rerun: npm install -g superlocalmemory');
+    console.log('');
+    process.exit(0);
+}
+console.log(`✓ Using Python runtime (${runtimeSelection.mode}): ` + pythonParts.join(' '));
+if (runtimeSelection.mode !== 'managed_venv') {
+    console.log('⚠ Managed venv unavailable; falling back to system Python (' +
+        runtimeSelection.reason + ')');
+}
+
+const pkgJson = require(path.join(__dirname, '..', 'package.json'));
+const runtimeMetadataPath = writeRuntimeMetadata({
+    mode: runtimeSelection.mode,
+    python_executable: pythonParts[0],
+    python_args: pythonParts.slice(1),
+    venv_dir: runtimeSelection.venvDir,
+    selected_reason: runtimeSelection.reason,
+    slm_version: pkgJson.version,
+    updated_at: new Date().toISOString(),
+}, SLM_HOME);
+console.log('✓ Wrote Python runtime metadata: ' + runtimeMetadataPath);
 
 // --- Step 3: Install ALL Python dependencies ---
 console.log('\nInstalling Python dependencies (this may take 1-2 minutes)...\n');
